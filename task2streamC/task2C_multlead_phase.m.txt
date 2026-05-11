@@ -1,0 +1,108 @@
+
+
+%% =========================================================================
+%  TASK 2 — STREAM C: Multi-Lead Phase Consistency
+%  Source: ecg_hardware.csv
+%  Note: ESP32 single-channel — 12 leads simulated with gain/offset shifts.
+%        For real multi-channel: save each lead to a column in one CSV.
+% =========================================================================
+
+clc; clear; close all;
+
+data = readmatrix('ecg_hardware4.csv');
+ecg  = data(:,1)'; Fs = 250; N = length(ecg); t = (0:N-1)/Fs;
+ecg  = (ecg - mean(ecg))/max(abs(ecg - mean(ecg)));  % Normalize
+
+leadNames = {'I','II','III','aVR','aVL','aVF','V1','V2','V3','V4','V5','V6'};
+nLeads    = 12;
+leadGains = [1.0,0.9,0.85,-0.8,0.6,0.75,0.5,0.7,0.8,0.9,0.85,0.8];
+leads12   = zeros(nLeads,N);
+for k = 1:nLeads
+    leads12(k,:) = leadGains(k)*circshift(ecg, round(k*1.5));
+end
+colors = lines(nLeads);
+
+%% ---- C.1: Stacked 12-Lead Raw Plot ----
+figure('Name','Stream C — C.1: 12-Lead Stacked (Hardware)','Position',[30 30 1400 900]);
+offset = 0;
+for k = 1:nLeads
+    plot(t, leads12(k,:)+offset,'Color',colors(k,:),'LineWidth',0.9); hold on;
+    text(t(end)+0.05, offset, leadNames{k},'FontSize',8,'Color',colors(k,:));
+    offset = offset+2.5;
+end
+xlabel('Time (seconds)','FontSize',11);
+ylabel('Amplitude (normalized, offset for clarity)','FontSize',11);
+title('Stream C.1 — 12-Lead Stacked ECG (Derived from Hardware ESP32 Signal)', ...
+      'FontSize',12,'FontWeight','bold');
+grid on; xlim([0 min(10,t(end))]);
+
+%% ---- C.2 & C.4: Group Delay — IIR vs FIR ----
+[b_iir,a_iir] = butter(4,0.5/(Fs/2),'high');
+b_fir_hp      = fir1(200,0.5/(Fs/2),'high');
+
+figure('Name','Stream C — C.2/C.4: Group Delay','Position',[30 30 1400 600]);
+subplot(1,2,1); grpdelay(b_iir,a_iir,1024,Fs);
+title('C.2 — IIR HP Filter: Non-Constant Group Delay (Phase Distortion Per Lead)', ...
+      'FontSize',10,'FontWeight','bold');
+subplot(1,2,2); grpdelay(b_fir_hp,1,1024,Fs);
+title('C.4 — FIR HP Filter: Constant Group Delay (Zero-Phase — Leads Aligned)', ...
+      'FontSize',10,'FontWeight','bold');
+sgtitle('Stream C.2/C.4 — Group Delay Comparison: IIR vs FIR (Hardware ECG)', ...
+        'FontSize',12,'FontWeight','bold');
+
+%% ---- C.3 & C.5: IIR vs filtfilt — Cross-Correlation Alignment ----
+leads_iir  = zeros(nLeads,N);
+leads_filt = zeros(nLeads,N);
+for k = 1:nLeads
+    leads_iir(k,:)  = filter(b_iir, a_iir, leads12(k,:));
+    leads_filt(k,:) = filtfilt(b_iir,a_iir,leads12(k,:));
+end
+
+figure('Name','Stream C — C.5: Cross-Correlation Lead I vs V6','Position',[30 30 1400 600]);
+[cc_raw,lags12]  = xcorr(leads12(1,:),  leads12(12,:));
+[cc_iir,~]       = xcorr(leads_iir(1,:),leads_iir(12,:));
+[cc_filt,~]      = xcorr(leads_filt(1,:),leads_filt(12,:));
+subplot(1,3,1);
+plot(lags12/Fs*1000,cc_raw,'b','LineWidth',1.2);
+xlabel('Lag (ms)'); ylabel('Cross-Correlation');
+title('C.5 — Raw Hardware: Lead I vs V6','FontSize',10,'FontWeight','bold');
+grid on; xlim([-50 50]);
+subplot(1,3,2);
+plot(lags12/Fs*1000,cc_iir,'r','LineWidth',1.2);
+xlabel('Lag (ms)'); ylabel('Cross-Correlation');
+title('C.5 — After IIR Filter: Timing Shifted','FontSize',10,'FontWeight','bold');
+grid on; xlim([-50 50]);
+subplot(1,3,3);
+plot(lags12/Fs*1000,cc_filt,'g','LineWidth',1.2);
+xlabel('Lag (ms)'); ylabel('Cross-Correlation');
+title('C.5 — After filtfilt: Timing Preserved','FontSize',10,'FontWeight','bold');
+grid on; xlim([-50 50]);
+sgtitle('Stream C.5 — Cross-Correlation Lead I vs V6: Raw / IIR / filtfilt (Hardware ECG)', ...
+        'FontSize',12,'FontWeight','bold');
+
+%% ---- Timing Error Table ----
+fprintf('\n===== Stream C: Timing Error Table (Hardware ECG) =====\n');
+fprintf('%-10s | IIR Error (ms) | filtfilt Error (ms)\n','Lead Pair');
+fprintf('-----------|----------------|---------------------\n');
+for k = 2:nLeads
+    [ci,li] = xcorr(leads_iir(1,:), leads_iir(k,:));
+    [cf,lf] = xcorr(leads_filt(1,:),leads_filt(k,:));
+    ei = li(ci==max(ci)); ei=ei(1)/Fs*1000;
+    ef = lf(cf==max(cf)); ef=ef(1)/Fs*1000;
+    fprintf('I vs %-5s | %14.2f | %19.2f\n',leadNames{k},abs(ei),abs(ef));
+end
+fprintf('=======================================================\n');
+
+%% ---- C.6: Corrected 12-Lead Stacked Plot ----
+figure('Name','Stream C — C.6: Corrected 12-Lead ECG','Position',[30 30 1400 900]);
+offset = 0;
+for k = 1:nLeads
+    plot(t,leads_filt(k,:)+offset,'Color',colors(k,:),'LineWidth',0.9); hold on;
+    text(t(end)+0.05,offset,leadNames{k},'FontSize',8,'Color',colors(k,:));
+    offset = offset+2.5;
+end
+xlabel('Time (seconds)','FontSize',11);
+ylabel('Amplitude (normalized, offset for clarity)','FontSize',11);
+title('Stream C.6 — Corrected 12-Lead ECG After Zero-Phase Filtering (filtfilt) — Hardware ECG', ...
+      'FontSize',12,'FontWeight','bold');
+grid on; xlim([0 min(10,t(end))]);

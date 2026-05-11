@@ -1,0 +1,171 @@
+%% =========================================================================
+%  TASK 1A — Real-Time ECG Acquisition, Dashboard, R-Peak, BPM & HRV
+%  Hardware: ESP32 via Serial COM3, 115200 baud
+% =========================================================================
+
+clc; clear; close all;
+
+%% ---- 1A.1: Serial Port Setup ----
+delete(instrfindall);               % Clear leftover serial objects
+s = serialport("COM3", 115200);    % Connect to ESP32
+configureTerminator(s, "LF");      % ESP32 sends newline-terminated strings
+flush(s);                          % Flush stale buffer
+disp('ESP32 connected on COM3. Streaming ECG...');
+disp('Press Ctrl+C to stop. Data saves to ecg_hardware.csv');
+
+%% ---- 1A.2: Parameters ----
+Fs          = 250;                  % Sampling rate Hz (ESP32 sends every 4 ms)
+windowSec   = 8;                    % Rolling display window seconds
+windowSize  = windowSec * Fs;      % Samples in display window
+buffer      = zeros(1, windowSize);% Rolling ECG sample buffer
+rPeakBuffer = [];                   % R-peak sample indices
+sampleCount = 0;                    % Total sample counter
+minPeakDist = round(0.3 * Fs);     % Min 300 ms gap between R-peaks
+minPeakHt   = 2500;                % Min ADC value for R-peak (tune this)
+savedData   = [];                   % Accumulates all samples for CSV
+bpmHistory  = [];                   % BPM values over time
+rrHistory   = [];                   % RR intervals in ms
+
+%% ---- 1A.3: Dashboard Figure Layout ----
+figure('Name', 'Task 1A — Real-Time ECG Dashboard (ESP32 Hardware)', ...
+       'NumberTitle', 'off', 'Color', [0.08 0.08 0.08], ...
+       'Position', [30 30 1400 820]);
+
+% Plot 1: Rolling ECG waveform
+ax1 = subplot(3, 2, [1 2]);
+hECG   = plot(buffer, 'Color', [0.2 0.85 0.2], 'LineWidth', 1.2);
+hold on;
+hPeaks = plot(NaN, NaN, 'rv', 'MarkerSize', 10, 'MarkerFaceColor', 'red');
+hold off;
+xlim([1 windowSize]); ylim([0 4095]);
+xlabel('Sample Number',          'Color','w','FontSize',10);
+ylabel('ADC Value (0 to 4095)', 'Color','w','FontSize',10);
+title('Real-Time ECG Waveform — Rolling 8-Second Window (ESP32, Fs = 250 Hz)', ...
+      'Color','w','FontSize',12,'FontWeight','bold');
+set(ax1,'Color',[0.12 0.12 0.12],'XColor','w','YColor','w');
+grid on; grid minor;
+legend([hECG, hPeaks],{'ECG Signal','R-Peaks'},'TextColor','w','Location','northeast');
+
+% Plot 2: Single ECG cycle
+ax2 = subplot(3, 2, 3);
+hCycle = plot(NaN, NaN, 'Color',[0.3 0.65 1],'LineWidth',2);
+xlabel('Sample (centered at R-Peak)','Color','w','FontSize',9);
+ylabel('ADC Value','Color','w','FontSize',9);
+title('One ECG Cycle — Last R-Peak Centered','Color','w','FontSize',11,'FontWeight','bold');
+set(ax2,'Color',[0.12 0.12 0.12],'XColor','w','YColor','w');
+ylim([0 4095]); grid on;
+legend('Single ECG Cycle','TextColor','w','Location','northeast');
+
+% Plot 3: BPM trend
+ax3 = subplot(3, 2, 4);
+hBPM = plot(NaN, NaN, 'yo-','LineWidth',1.5,'MarkerSize',4);
+xlabel('Beat Number','Color','w','FontSize',9);
+ylabel('Heart Rate (BPM)','Color','w','FontSize',9);
+title('Instantaneous Heart Rate (BPM) Over Time','Color','w','FontSize',11,'FontWeight','bold');
+set(ax3,'Color',[0.12 0.12 0.12],'XColor','w','YColor','w');
+ylim([30 200]); grid on;
+legend('Heart Rate BPM','TextColor','w','Location','northeast');
+
+% Plot 4: HRV tachogram
+ax4 = subplot(3, 2, 5);
+hHRV = plot(NaN, NaN, 'mo-','LineWidth',1.5,'MarkerSize',4);
+xlabel('Beat Number','Color','w','FontSize',9);
+ylabel('RR Interval (ms)','Color','w','FontSize',9);
+title('HRV — RR Interval Tachogram','Color','w','FontSize',11,'FontWeight','bold');
+set(ax4,'Color',[0.12 0.12 0.12],'XColor','w','YColor','w');
+ylim([200 2000]); grid on;
+legend('RR Interval ms','TextColor','w','Location','northeast');
+
+% Panel 5: Live numeric readout
+ax5 = subplot(3, 2, 6);
+axis off; set(ax5,'Color',[0.12 0.12 0.12]);
+txtBPM  = text(0.05,0.75,'Heart Rate :  ---  BPM','Color',[1 0.85 0], ...
+               'FontSize',17,'FontWeight','bold','Units','normalized');
+txtHRV  = text(0.05,0.48,'RMSSD HRV :  ---  ms', 'Color',[0.4 1 0.4], ...
+               'FontSize',17,'FontWeight','bold','Units','normalized');
+txtStat = text(0.05,0.22,'Status: Acquiring from ESP32...','Color',[0.7 0.7 0.7], ...
+               'FontSize',11,'Units','normalized');
+txtSave = text(0.05,0.08,'Saving to: ecg_hardware4.csv','Color',[0.5 0.8 1], ...
+               'FontSize',10,'Units','normalized');
+
+%% ---- 1A.4: Real-Time Streaming Loop ----
+disp('Streaming... Press Ctrl+C to stop.');
+
+while true
+    rawLine = readline(s);
+    ecgVal  = str2double(rawLine);
+    if isnan(ecgVal), continue; end
+
+    sampleCount = sampleCount + 1;
+    savedData   = [savedData, ecgVal];
+    buffer      = [buffer(2:end), ecgVal];
+
+    % R-peak detection: threshold + refractory period
+    if ecgVal >= minPeakHt
+        if isempty(rPeakBuffer) || (sampleCount - rPeakBuffer(end)) > minPeakDist
+            rPeakBuffer = [rPeakBuffer, sampleCount];
+            if numel(rPeakBuffer) >= 2
+                rrSamp     = diff(rPeakBuffer(end-1:end));
+                rrMs       = (rrSamp / Fs) * 1000;
+                bpm        = 60 / (rrSamp / Fs);
+                bpmHistory = [bpmHistory, bpm];
+                rrHistory  = [rrHistory, rrMs];
+            end
+        end
+    end
+
+    % Refresh plots every 10 samples
+    if mod(sampleCount, 10) == 0
+        set(hECG,'YData',buffer);
+
+        if ~isempty(rPeakBuffer)
+            recentPks = rPeakBuffer(rPeakBuffer > sampleCount - windowSize);
+            pkIdx     = windowSize - (sampleCount - recentPks);
+            pkIdx     = pkIdx(pkIdx >= 1 & pkIdx <= windowSize);
+            set(hPeaks,'XData',pkIdx,'YData',buffer(pkIdx));
+        end
+
+        if ~isempty(rPeakBuffer)
+            lastPk = rPeakBuffer(end);
+            relPk  = windowSize - (sampleCount - lastPk);
+            s1     = max(1, relPk - 100);
+            s2     = min(windowSize, relPk + 100);
+            cycX   = (s1:s2) - relPk;
+            cycY   = buffer(s1:s2);
+            set(hCycle,'XData',cycX,'YData',cycY);
+            xlim(ax2,[min(cycX) max(cycX)]);
+        end
+
+        if ~isempty(bpmHistory)
+            nb = numel(bpmHistory);
+            set(hBPM,'XData',1:nb,'YData',bpmHistory);
+            xlim(ax3,[max(1,nb-30), max(31,nb)]);
+        end
+
+        if ~isempty(rrHistory)
+            nr = numel(rrHistory);
+            set(hHRV,'XData',1:nr,'YData',rrHistory);
+            xlim(ax4,[max(1,nr-30), max(31,nr)]);
+        end
+
+        if ~isempty(bpmHistory)
+            set(txtBPM,'String',sprintf('Heart Rate :  %.1f  BPM',bpmHistory(end)));
+        end
+        if numel(rrHistory) >= 2
+            rmssd = sqrt(mean(diff(rrHistory).^2));
+            set(txtHRV,'String',sprintf('RMSSD HRV :  %.1f  ms',rmssd));
+        end
+        set(txtStat,'String',sprintf('Samples: %d   |   Beats: %d',sampleCount,numel(rPeakBuffer)));
+        drawnow limitrate;
+    end
+
+    % Auto-save every 2500 samples (~10 sec)
+    if mod(sampleCount, 2500) == 0
+        writematrix(savedData','ecg_hardware4.csv');
+        set(txtSave,'String',sprintf('Saved %d samples to ecg_hardware.csv',sampleCount));
+    end
+end
+
+% Final save on Ctrl+C exit
+writematrix(savedData','ecg_hardware4.csv');
+disp('Data saved to ecg_hardware4.csv');

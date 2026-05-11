@@ -1,0 +1,144 @@
+%% =========================================================================
+%  TASK 1B — Frequency Domain Analysis
+%  Source: ecg_hardware.csv (saved from Task 1A above)
+% =========================================================================
+
+clc; clear; close all;
+
+%% ---- Load Hardware ECG ----
+data = readmatrix('ecg_hardware4.csv');
+ecg  = data(:,1)';
+Fs   = 250;
+N    = length(ecg);
+t    = (0:N-1)/Fs;
+fprintf('Hardware ECG: %d samples | %.2f sec | Fs=%d Hz\n',N,N/Fs,Fs);
+
+figure('Name','Task 1B — Frequency Domain Analysis (Hardware ECG)', ...
+       'Position',[30 30 1400 900]);
+
+%% ---- Time-Domain Plot ----
+subplot(4,2,1);
+plot(t, ecg,'Color',[0.1 0.5 0.9],'LineWidth',0.9);
+xlabel('Time (seconds)','FontSize',10);
+ylabel('ADC Value (0 to 4095)','FontSize',10);
+title('1B.1 — Raw ECG Signal from ESP32 Hardware (Time Domain)','FontSize',11,'FontWeight','bold');
+legend('Hardware ECG Signal','Location','northeast');
+grid on; xlim([0 t(end)]);
+
+%% ---- Compute FFT ----
+X     = fft(ecg);
+X_mag = (2/N)*abs(X(1:floor(N/2)+1));
+f_ax  = (0:floor(N/2))*(Fs/N);
+
+%% ---- Full Magnitude Spectrum ----
+subplot(4,2,2);
+plot(f_ax, X_mag,'r','LineWidth',1);
+xlabel('Frequency (Hz)','FontSize',10);
+ylabel('|X(f)| / N  (Normalized)','FontSize',10);
+title('1B.2 — FFT Magnitude Spectrum — Full Range (0 to Fs/2)','FontSize',11,'FontWeight','bold');
+legend('Magnitude Spectrum','Location','northeast');
+grid on; xlim([0 Fs/2]);
+
+%% ---- Zoomed Spectrum 0-50 Hz ----
+subplot(4,2,3);
+plot(f_ax, X_mag,'Color',[0.1 0.65 0.1],'LineWidth',1.2);
+xlabel('Frequency (Hz)','FontSize',10);
+ylabel('|X(f)| / N','FontSize',10);
+title('1B.3 — Zoomed FFT Spectrum (0 to 50 Hz) — ECG Relevant Range','FontSize',11,'FontWeight','bold');
+legend('ECG Spectrum 0 to 50 Hz','Location','northeast');
+xlim([0 50]); grid on;
+
+%% ---- Annotated Spectrum with Labeled Bands ----
+subplot(4,2,4);
+plot(f_ax, X_mag,'k','LineWidth',1); hold on; xlim([0 50]); grid on;
+
+bwBand  = f_ax <= 0.5;
+ecgBand = f_ax > 0.5 & f_ax <= 40;
+noiseBd = f_ax > 40  & f_ax <= 50;
+
+fill([f_ax(bwBand),  fliplr(f_ax(bwBand))], ...
+     [X_mag(bwBand),  zeros(1,sum(bwBand))], ...
+     'b','FaceAlpha',0.25,'EdgeColor','none');
+fill([f_ax(ecgBand), fliplr(f_ax(ecgBand))], ...
+     [X_mag(ecgBand), zeros(1,sum(ecgBand))], ...
+     'g','FaceAlpha',0.20,'EdgeColor','none');
+fill([f_ax(noiseBd), fliplr(f_ax(noiseBd))], ...
+     [X_mag(noiseBd), zeros(1,sum(noiseBd))], ...
+     'r','FaceAlpha',0.25,'EdgeColor','none');
+
+hrBand     = f_ax >= 0.5 & f_ax <= 4;
+[~,pkIdx]  = max(X_mag(hrBand));
+fVec       = f_ax(hrBand);
+fPeak      = fVec(pkIdx);
+pkMag      = X_mag(hrBand);
+plot(fPeak, pkMag(pkIdx),'rv','MarkerSize',14,'MarkerFaceColor','red');
+text(fPeak+0.2, pkMag(pkIdx),sprintf(' HR fund. %.3f Hz',fPeak), ...
+     'Color','red','FontSize',9,'FontWeight','bold');
+
+xlabel('Frequency (Hz)','FontSize',10); ylabel('|X(f)| / N','FontSize',10);
+title('1B.4 — Annotated Spectrum: Bands + HR Fundamental Labeled','FontSize',10,'FontWeight','bold');
+legend({'Full Spectrum','Baseline Wander (<0.5 Hz)','ECG Band (0.5 to 40 Hz)', ...
+        'Noise Band (40 to 50 Hz)','HR Fundamental'},'Location','northeast','FontSize',8);
+
+%% ---- PSD Welch ----
+subplot(4,2,5);
+[psd,fpsd] = pwelch(ecg, hamming(256), 128, 512, Fs);
+plot(fpsd, 10*log10(psd),'Color',[0.6 0 0.8],'LineWidth',1.2);
+xlabel('Frequency (Hz)','FontSize',10);
+ylabel('Power/Frequency (dB/Hz)','FontSize',10);
+title('1B.5 — Power Spectral Density (Welch Method)','FontSize',11,'FontWeight','bold');
+legend('PSD Welch Method','Location','northeast');
+xlim([0 50]); grid on;
+
+%% ---- R-Peak Detection ----
+ecgNorm    = (ecg - min(ecg))/(max(ecg) - min(ecg));
+[~,rLocs]  = findpeaks(ecgNorm,'MinPeakHeight',0.6,'MinPeakDistance',round(0.3*Fs));
+
+subplot(4,2,6);
+plot(t, ecg,'b','LineWidth',0.9); hold on;
+plot(t(rLocs), ecg(rLocs),'rv','MarkerSize',9,'MarkerFaceColor','red');
+xlabel('Time (seconds)','FontSize',10);
+ylabel('ADC Value','FontSize',10);
+title('1B.6 — R-Peak Detection on Hardware ECG (Time Domain)','FontSize',11,'FontWeight','bold');
+legend({'ECG Signal','Detected R-Peaks'},'Location','northeast');
+grid on;
+
+%% ---- HR Comparison ----
+rrSec    = diff(rLocs)/Fs;
+rrMs     = rrSec*1000;
+hr_time  = 60/mean(rrSec);
+hr_freq  = fPeak*60;
+rmssd    = sqrt(mean(diff(rrMs).^2));
+pctErr   = abs(hr_time - hr_freq)/hr_time*100;
+
+fprintf('\n===== Task 1B: Heart Rate Comparison Table =====\n');
+fprintf('Source              : ecg_hardware.csv (ESP32)\n');
+fprintf('Fs                  : %d Hz\n',Fs);
+fprintf('Duration            : %.2f s\n',N/Fs);
+fprintf('Dominant Freq (FFT) : %.4f Hz\n',fPeak);
+fprintf('HR from RR Intervals: %.2f BPM\n',hr_time);
+fprintf('HR from FFT Peak    : %.2f BPM\n',hr_freq);
+fprintf('Percentage Error    : %.2f %%\n',pctErr);
+fprintf('Mean RR Interval    : %.2f ms\n',mean(rrMs));
+fprintf('RMSSD (HRV)         : %.2f ms\n',rmssd);
+fprintf('================================================\n');
+
+subplot(4,2,7);
+bar([hr_time, hr_freq],0.5,'FaceColor',[0.2 0.6 0.9]);
+set(gca,'XTickLabel',{'Time Domain (RR)','Freq Domain (FFT)'},'FontSize',9);
+ylabel('Heart Rate (BPM)','FontSize',10);
+title(sprintf('1B.7 — HR: %.1f BPM vs %.1f BPM (Error=%.2f%%)',hr_time,hr_freq,pctErr), ...
+      'FontSize',10,'FontWeight','bold');
+ylim([0 max(hr_time,hr_freq)*1.4]); grid on;
+text(1,hr_time+1,sprintf('%.1f',hr_time),'HorizontalAlignment','center','FontWeight','bold');
+text(2,hr_freq+1,sprintf('%.1f',hr_freq),'HorizontalAlignment','center','FontWeight','bold');
+
+subplot(4,2,8);
+plot(1:numel(rrMs), rrMs,'go-','LineWidth',1.5,'MarkerSize',5);
+xlabel('Beat Number','FontSize',10);
+ylabel('RR Interval (ms)','FontSize',10);
+title(sprintf('1B.8 — HRV Tachogram — RMSSD = %.2f ms',rmssd),'FontSize',11,'FontWeight','bold');
+legend('RR Intervals ms','Location','best'); grid on;
+
+sgtitle('Task 1B — Complete Frequency Domain Analysis — Hardware ECG (ESP32)', ...
+        'FontSize',13,'FontWeight','bold');

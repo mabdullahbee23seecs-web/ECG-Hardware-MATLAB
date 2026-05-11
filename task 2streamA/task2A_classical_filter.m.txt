@@ -1,0 +1,129 @@
+%% =========================================================================
+%  TASK 2 — STREAM A: Classical Filtering
+%  Source: ecg_hardware.csv
+% =========================================================================
+
+clc; clear; close all;
+
+data = readmatrix('ecg_hardware4.csv');
+ecg  = data(:,1)'; Fs = 250; N = length(ecg); t = (0:N-1)/Fs;
+f_ax = (0:floor(N/2))*(Fs/N);
+sigIdx   = f_ax >= 0.5 & f_ax <= 40;
+noiseIdx = ~sigIdx;
+
+%% ---- A.1: Raw Signal Plot ----
+figure('Name','Stream A — A.1: Raw Hardware ECG','Position',[30 30 1300 420]);
+plot(t, ecg,'b','LineWidth',0.8);
+xlabel('Time (seconds)','FontSize',11); ylabel('ADC Value (0 to 4095)','FontSize',11);
+title('Stream A.1 — Raw ECG from ESP32 Hardware (Before Filtering)','FontSize',12,'FontWeight','bold');
+legend('Raw Hardware ECG','Location','northeast'); grid on; xlim([0 t(end)]);
+
+%% ---- A.2: FFT Raw ----
+X_raw = fft(ecg);
+Xmag  = (2/N)*abs(X_raw(1:floor(N/2)+1));
+P_sig   = sum(Xmag(sigIdx).^2);
+P_noise = sum(Xmag(noiseIdx).^2);
+SNR_before = 10*log10(P_sig/(P_noise+eps));
+
+figure('Name','Stream A — A.2: FFT Raw Hardware ECG','Position',[30 30 1300 420]);
+plot(f_ax, Xmag,'r','LineWidth',1); hold on;
+[~,idx50] = min(abs(f_ax-50));
+plot(f_ax(idx50),Xmag(idx50),'rv','MarkerSize',12,'MarkerFaceColor','red');
+text(51,Xmag(idx50),' 50 Hz power-line','Color','red','FontSize',9,'FontWeight','bold');
+text(1,max(Xmag)*0.85,'ECG Band 0.5 to 40 Hz','Color',[0 0.5 0],'FontSize',9,'FontWeight','bold');
+text(0.1,max(Xmag)*0.65,'Baseline Wander <0.5 Hz','Color','b','FontSize',9,'FontWeight','bold');
+xlabel('Frequency (Hz)','FontSize',11); ylabel('|X(f)| / N','FontSize',11);
+title('Stream A.2 — FFT Magnitude Spectrum of Raw Hardware ECG','FontSize',12,'FontWeight','bold');
+legend({'FFT Spectrum','50 Hz Peak'},'Location','northeast');
+xlim([0 Fs/2]); grid on;
+fprintf('\nSNR Before Filtering: %.2f dB\n',SNR_before);
+
+%% ---- A.4: High-Pass Filter — 0.5 Hz Baseline Wander Removal ----
+orderHP   = 200;
+b_hp_fir  = firpm(orderHP,[0,0.3,0.5,Fs/2]/(Fs/2),[0,0,1,1]);
+[b_hp_iir,a_hp_iir] = butter(4,0.5/(Fs/2),'high');
+
+figure('Name','Stream A — A.4/A.8: HP Filter','Position',[30 30 1400 700]);
+subplot(2,2,1); freqz(b_hp_fir,1,1024,Fs);
+title('A.4 — FIR Parks-McClellan HP: Magnitude Response (fc=0.5 Hz)','FontSize',10,'FontWeight','bold');
+subplot(2,2,2);
+[h_iir,w_iir] = freqz(b_hp_iir,a_hp_iir,1024,Fs);
+plot(w_iir,20*log10(abs(h_iir)+eps),'r','LineWidth',1.5);
+xlabel('Frequency (Hz)'); ylabel('Magnitude (dB)');
+title('A.4 — IIR Butterworth HP: Magnitude Response (fc=0.5 Hz)','FontSize',10,'FontWeight','bold');
+grid on;
+subplot(2,2,3); grpdelay(b_hp_fir,1,1024,Fs);
+title('A.8 — FIR HP: Constant Group Delay (Linear Phase)','FontSize',10,'FontWeight','bold');
+subplot(2,2,4); grpdelay(b_hp_iir,a_hp_iir,1024,Fs);
+title('A.8 — IIR HP: Non-Constant Group Delay (Phase Distortion)','FontSize',10,'FontWeight','bold');
+sgtitle('Stream A.4/A.8 — HP Filter Design: FIR vs IIR (Hardware ECG)','FontSize',12,'FontWeight','bold');
+
+%% ---- A.5: Notch Filter — 50 Hz ----
+[b_notch,a_notch] = iirnotch(50/(Fs/2),(50/(Fs/2))/35);
+figure('Name','Stream A — A.5: Notch Filter 50 Hz','Position',[30 30 1300 500]);
+freqz(b_notch,a_notch,1024,Fs);
+title('Stream A.5 — IIR Notch Filter at 50 Hz: Magnitude and Phase Response','FontSize',12,'FontWeight','bold');
+
+%% ---- A.6: Low-Pass Filter — 40 Hz EMG Removal ----
+b_lp_fir = fir1(150, 40/(Fs/2),'low');
+[b_lp_iir,a_lp_iir] = butter(6,40/(Fs/2),'low');
+
+figure('Name','Stream A — A.6/A.8: LP Filter','Position',[30 30 1400 700]);
+subplot(2,2,1); freqz(b_lp_fir,1,1024,Fs);
+title('A.6 — FIR LP: Magnitude Response (fc=40 Hz)','FontSize',10,'FontWeight','bold');
+subplot(2,2,2);
+[h_lp,w_lp] = freqz(b_lp_iir,a_lp_iir,1024,Fs);
+plot(w_lp,20*log10(abs(h_lp)+eps),'r','LineWidth',1.5);
+xlabel('Frequency (Hz)'); ylabel('Magnitude (dB)');
+title('A.6 — IIR Butterworth LP: Magnitude Response (fc=40 Hz)','FontSize',10,'FontWeight','bold'); grid on;
+subplot(2,2,3); grpdelay(b_lp_fir,1,1024,Fs);
+title('A.8 — FIR LP: Constant Group Delay','FontSize',10,'FontWeight','bold');
+subplot(2,2,4); grpdelay(b_lp_iir,a_lp_iir,1024,Fs);
+title('A.8 — IIR LP: Non-Constant Group Delay','FontSize',10,'FontWeight','bold');
+sgtitle('Stream A.6/A.8 — LP Filter Design: FIR vs IIR (Hardware ECG)','FontSize',12,'FontWeight','bold');
+
+%% ---- A.7: Combined Pipeline — HP > Notch > LP ----
+ecg_hp    = filtfilt(b_hp_fir,  1,       ecg);
+ecg_notch = filtfilt(b_notch,   a_notch, ecg_hp);
+ecg_clean = filtfilt(b_lp_fir,  1,       ecg_notch);
+
+figure('Name','Stream A — A.7: Before vs After (Time Domain)','Position',[30 30 1400 800]);
+subplot(3,1,1);
+plot(t, ecg,'r','LineWidth',0.8);
+xlabel('Time (s)'); ylabel('ADC Value');
+title('A.7 — Raw Hardware ECG (Noise Visible: Baseline Wander + 50 Hz + EMG)','FontSize',11,'FontWeight','bold');
+legend('Raw ECG'); grid on; xlim([0 min(10,t(end))]);
+subplot(3,1,2);
+plot(t, ecg_clean,'b','LineWidth',1.1);
+xlabel('Time (s)'); ylabel('ADC Value');
+title('A.7 — Cleaned ECG After HP + Notch + LP Pipeline (filtfilt Zero-Phase)','FontSize',11,'FontWeight','bold');
+legend('Filtered ECG'); grid on; xlim([0 min(10,t(end))]);
+subplot(3,1,3);
+plot(t, ecg,'r','LineWidth',0.8); hold on;
+plot(t, ecg_clean,'b','LineWidth',1.2);
+xlabel('Time (s)'); ylabel('ADC Value');
+title('A.7 — Overlay: Raw vs Cleaned Hardware ECG','FontSize',11,'FontWeight','bold');
+legend({'Raw ECG','Cleaned ECG'},'Location','northeast'); grid on; xlim([0 min(10,t(end))]);
+sgtitle('Stream A.7 — Filtering Pipeline Results on Hardware ECG','FontSize',12,'FontWeight','bold');
+
+Xmag_cln   = (2/N)*abs(fft(ecg_clean)); Xmag_cln = Xmag_cln(1:floor(N/2)+1);
+figure('Name','Stream A — A.7: Before vs After (Freq Domain)','Position',[30 30 1400 480]);
+subplot(1,2,1);
+plot(f_ax,Xmag,'r','LineWidth',1); xlabel('Frequency (Hz)'); ylabel('|X(f)|/N');
+title('FFT — Raw Hardware ECG','FontSize',11,'FontWeight','bold');
+xlim([0 Fs/2]); grid on; legend('Raw Spectrum');
+subplot(1,2,2);
+plot(f_ax,Xmag_cln,'b','LineWidth',1); xlabel('Frequency (Hz)'); ylabel('|X(f)|/N');
+title('FFT — After HP + Notch + LP Filtering','FontSize',11,'FontWeight','bold');
+xlim([0 Fs/2]); grid on; legend('Filtered Spectrum');
+sgtitle('Stream A.7 — Frequency Domain: Before vs After (Hardware ECG)','FontSize',12,'FontWeight','bold');
+
+P_sig_a  = sum(Xmag_cln(sigIdx).^2);
+P_noi_a  = sum(Xmag_cln(noiseIdx).^2);
+SNR_after = 10*log10(P_sig_a/(P_noi_a+eps));
+fprintf('\n===== Stream A SNR Summary (Hardware ECG) =====\n');
+fprintf('SNR Before: %.2f dB\nSNR After : %.2f dB\nImprovement: %.2f dB\n', ...
+        SNR_before, SNR_after, SNR_after-SNR_before);
+fprintf('================================================\n');
+
+

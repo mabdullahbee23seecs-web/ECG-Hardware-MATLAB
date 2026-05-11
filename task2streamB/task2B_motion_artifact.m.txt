@@ -1,0 +1,147 @@
+
+
+
+%% =========================================================================
+%  TASK 2 — STREAM B: Motion Artifact Removal
+%  Source: ecg_hardware.csv (or ecg_hardware_motion.csv for real artifacts)
+%  For real motion artifacts: record ECG while subject moves arm/walks,
+%  save as ecg_hardware_motion.csv and load it below instead.
+% =========================================================================
+
+clc; clear; close all;
+
+data = readmatrix('ecg_hardware4.csv');
+ecg  = data(:,1)'; Fs = 250; N = length(ecg); t = (0:N-1)/Fs;
+
+% Simulate transient motion artifact (replace with real motion CSV if available)
+artifact           = zeros(1,N);
+artSeg             = [round(3*Fs):round(4.2*Fs), round(8*Fs):round(9.5*Fs), round(14*Fs):round(15.3*Fs)];
+artSeg(artSeg > N) = [];
+artifact(artSeg)   = 500*randn(1,numel(artSeg));
+ecgArt             = ecg + artifact;
+
+%% ---- B.2: Fixed Filter Failure ----
+[b_hp2,a_hp2] = butter(4,0.5/(Fs/2),'high');
+[b_lp2,a_lp2] = butter(6,40/(Fs/2),'low');
+ecgFixFilt    = filtfilt(b_lp2,a_lp2,filtfilt(b_hp2,a_hp2,ecgArt));
+
+figure('Name','Stream B — B.2: Fixed Filter Failure','Position',[30 30 1400 750]);
+subplot(3,1,1);
+plot(t,ecg,'b','LineWidth',0.9); xlabel('Time (s)'); ylabel('ADC Value');
+title('B.2 — Original Clean Hardware ECG (Reference)','FontSize',11,'FontWeight','bold');
+legend('Clean ECG'); grid on; xlim([0 t(end)]);
+subplot(3,1,2);
+plot(t,ecgArt,'r','LineWidth',0.8); xlabel('Time (s)'); ylabel('ADC Value');
+title('B.2 — Hardware ECG with Motion Artifacts (Transient Bursts)','FontSize',11,'FontWeight','bold');
+legend('Artifact-Contaminated ECG'); grid on; xlim([0 t(end)]);
+subplot(3,1,3);
+plot(t,ecgFixFilt,'Color',[0.6 0 0.7],'LineWidth',1);
+xlabel('Time (s)'); ylabel('ADC Value');
+title('B.2 — After Fixed IIR Filter: Ringing Visible at Artifact Regions (Filter Failure Demonstrated)', ...
+      'FontSize',11,'FontWeight','bold');
+legend('Fixed IIR Output — Ringing'); grid on; xlim([0 t(end)]);
+sgtitle('Stream B.2 — Fixed Filter Failure on Motion-Artifact Hardware ECG','FontSize',12,'FontWeight','bold');
+
+%% ---- B.3: STFT Spectrogram — 3 Window Sizes ----
+figure('Name','Stream B — B.3: STFT Spectrograms','Position',[30 30 1400 850]);
+winSizes  = [64, 128, 256];
+winLabels = {'Short Window 64 samples — Better Time Resolution', ...
+             'Medium Window 128 samples', ...
+             'Long Window 256 samples — Better Frequency Resolution'};
+for i = 1:3
+    subplot(3,1,i);
+    spectrogram(ecgArt,hamming(winSizes(i)),round(winSizes(i)*0.5),[],Fs,'yaxis');
+    title(sprintf('B.3 — Spectrogram: %s',winLabels{i}),'FontSize',10,'FontWeight','bold');
+    ylabel('Frequency (Hz)','FontSize',9); xlabel('Time (s)','FontSize',9);
+    ylim([0 60]); colorbar; colormap(jet);
+end
+sgtitle('Stream B.3 — STFT Spectrograms: Window Size vs Time-Frequency Resolution Trade-off (Hardware ECG)', ...
+        'FontSize',12,'FontWeight','bold');
+
+%% ---- B.4 & B.5: Frame-Based Artifact Detection ----
+frameLen    = 256; hopLen = 128;
+nFrames     = floor((N-frameLen)/hopLen)+1;
+frameEnergy = zeros(1,nFrames);
+for i = 1:nFrames
+    idx = (i-1)*hopLen+(1:frameLen); idx(idx>N)=N;
+    frameEnergy(i) = var(ecgArt(idx));
+end
+energyThresh   = mean(frameEnergy)+2.5*std(frameEnergy);
+artifactFrames = frameEnergy > energyThresh;
+artifactMask   = false(1,N);
+for i = 1:nFrames
+    if artifactFrames(i)
+        idx = (i-1)*hopLen+(1:frameLen); idx(idx>N)=N;
+        artifactMask(idx)=true;
+    end
+end
+
+figure('Name','Stream B — B.4/B.5: Artifact Detection','Position',[30 30 1400 650]);
+subplot(2,1,1);
+plot(t,ecgArt,'b','LineWidth',0.8); hold on;
+plot(t(artifactMask),ecgArt(artifactMask),'r.','MarkerSize',3);
+xlabel('Time (s)','FontSize',10); ylabel('ADC Value','FontSize',10);
+title('B.5 — Artifact Detection: Flagged Regions in Red (Hardware ECG)','FontSize',11,'FontWeight','bold');
+legend({'Clean Frames','Artifact Frames'},'Location','northeast'); grid on;
+subplot(2,1,2);
+frameT = ((0:nFrames-1)*hopLen+frameLen/2)/Fs;
+plot(frameT,frameEnergy,'b','LineWidth',1.2); hold on;
+yline(energyThresh,'r--','LineWidth',1.5,'Label','Detection Threshold');
+scatter(frameT(artifactFrames),frameEnergy(artifactFrames),60,'r','filled');
+xlabel('Time (s)','FontSize',10); ylabel('Frame Variance','FontSize',10);
+title('B.4 — Frame Energy vs Threshold (Variance-Based Detector)','FontSize',11,'FontWeight','bold');
+legend({'Frame Energy','Threshold','Artifact Frame'},'Location','northeast'); grid on;
+
+%% ---- B.6: Three Artifact Removal Methods ----
+
+% Method 1: Linear Interpolation
+ecgInterp = ecgArt;
+bounds = find(diff([0 artifactMask 0]));
+starts = bounds(1:2:end); ends = bounds(2:2:end)-1;
+for k = 1:numel(starts)
+    s2=starts(k); e2=ends(k);
+    if s2>1 && e2<N
+        ecgInterp(s2:e2) = interp1([s2-1,e2+1],[ecgArt(s2-1),ecgArt(e2+1)],s2:e2);
+    end
+end
+
+% Method 2: Wavelet Denoising
+ecgWavelet = wdenoise(ecgArt,4,'Wavelet','sym8','DenoisingMethod','Bayes','ThresholdRule','Soft');
+
+% Method 3: Median Filtering
+ecgMedian = medfilt1(ecgArt,15);
+
+figure('Name','Stream B — B.6: Removal Methods Comparison','Position',[30 30 1400 900]);
+subplot(4,1,1);
+plot(t,ecgArt,'r','LineWidth',0.8); xlabel('Time (s)'); ylabel('ADC Value');
+title('B.6 — Input: Hardware ECG with Motion Artifacts','FontSize',11,'FontWeight','bold');
+grid on; xlim([0 t(end)]); legend('Artifact-Contaminated ECG');
+subplot(4,1,2);
+plot(t,ecgInterp,'b','LineWidth',1); xlabel('Time (s)'); ylabel('ADC Value');
+title('B.6 — Method 1: Linear Interpolation at Detected Artifact Regions','FontSize',11,'FontWeight','bold');
+grid on; xlim([0 t(end)]); legend('Interpolated ECG');
+subplot(4,1,3);
+plot(t,ecgWavelet,'Color',[0 0.65 0],'LineWidth',1); xlabel('Time (s)'); ylabel('ADC Value');
+title('B.6 — Method 2: Wavelet Denoising (sym8, 4 Levels, Bayes Threshold)','FontSize',11,'FontWeight','bold');
+grid on; xlim([0 t(end)]); legend('Wavelet-Denoised ECG');
+subplot(4,1,4);
+plot(t,ecgMedian,'Color',[0.6 0 0.8],'LineWidth',1); xlabel('Time (s)'); ylabel('ADC Value');
+title('B.6 — Method 3: Median Filtering (Window = 15 Samples)','FontSize',11,'FontWeight','bold');
+grid on; xlim([0 t(end)]); legend('Median-Filtered ECG');
+sgtitle('Stream B.6 — Artifact Removal Method Comparison (Hardware ECG)','FontSize',12,'FontWeight','bold');
+
+%% ---- B.7: Quantitative Comparison ----
+methods    = {'Linear Interpolation','Wavelet Denoising','Median Filtering'};
+ecgMethods = {ecgInterp, ecgWavelet, ecgMedian};
+fprintf('\n===== Stream B: Performance Comparison Table (Hardware ECG) =====\n');
+fprintf('%-25s | SNR (dB) | Correlation | RMS Error\n','Method');
+fprintf('---------------------------|----------|-------------|----------\n');
+for m = 1:3
+    proc   = ecgMethods{m};
+    res    = ecg - proc;
+    snrVal = 10*log10(var(ecg)/(var(res)+eps));
+    cc     = corrcoef(ecg,proc); corrVal = cc(1,2);
+    rmsErr = sqrt(mean((ecg-proc).^2));
+    fprintf('%-25s | %8.2f | %11.4f | %9.2f\n',methods{m},snrVal,corrVal,rmsErr);
+end
+fprintf('=================================================================\n');
